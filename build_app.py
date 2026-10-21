@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """MacNativeGames: turn your own XCI or NSP into a native Mac app or iPhone/iPad IPA.
 
-    python3 build_app.py <game.xci|game.nsp> -k <prod.keys> [--platform macos|ios] [-o <output>] [--work <folder>]
+    uv run --managed-python --python 3.14 build_app.py <game.xci|game.nsp> -k <prod.keys> [--platform macos|ios] [-o <output>] [--work <folder>]
 
 Supported: TOTK base 1.0.0 (0100F2C0115B6000), XCI or NSP; optional --update with a supported cumulative update.
 Also Breath of the Wild 1.6.0 (01007EF00011E000) as one card image holding the base game, the update and the add-on
@@ -28,8 +28,9 @@ Every intermediate file is in the work folder (default: "<game file folder>/TOTK
 what is already done and correct. Mac saves, shader cache and logs go to the user's Library folders; iOS keeps saves
 and the writable shader cache in the app's Documents container.
 
-Needs for Mac: macOS 26 or later on Apple silicon, the Xcode command line tools, Homebrew with
-    brew install opus libvpx python@3.14
+Needs for Mac: macOS 26 or later on Apple silicon, the Xcode command line tools, uv with its own Python 3.14 and Homebrew with
+    uv python install 3.14
+    brew install opus libvpx
 For iPhone/iPad: Xcode 26+ with iOS/Metal toolchains, plus xcodegen, CMake and Ninja.
 Optional: Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain) compiles the startup shaders into the
 app, so moving or rebuilding it does not repeat that work at launch.
@@ -221,9 +222,14 @@ def _bfttf_valid(path):
 def prerequisites(args):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise BuildError('needs a Mac with Apple silicon')
-    major = int(platform.mac_ver()[0].split('.')[0] or 0)
+    # sw_vers, not platform.mac_ver(): that reads the plist through pyexpat and returns '' when pyexpat cannot load
+    version = subprocess.run(['sw_vers', '-productVersion'], capture_output=True, text=True, check=True).stdout.strip()
+    try:
+        major = int(version.split('.')[0])
+    except ValueError:
+        raise BuildError(f'cannot determine the macOS version (sw_vers said {version!r})')
     if major < 26:
-        raise BuildError(f'needs macOS 26 or later (Metal 4); this is macOS {platform.mac_ver()[0]}')
+        raise BuildError(f'needs macOS 26 or later (Metal 4); this is macOS {version}')
     if subprocess.run(['xcrun', '--find', 'clang'], capture_output=True).returncode:
         raise BuildError('the Xcode command line tools are missing: xcode-select --install')
     # SPIRV-Cross is C++: without the SDK's libc++ headers the build stops much later at "'string' file not found" (#41)
@@ -240,10 +246,15 @@ def prerequisites(args):
         raise BuildError(f'Homebrew packages missing: brew install {" ".join(missing)}')
     if not shutil.which('git', path=os.pathsep.join(TOOL_PATHS + ['/usr/bin'])):
         raise BuildError('git not found: xcode-select --install')
-    py = next((p for p in (shutil.which(n, path=os.pathsep.join(TOOL_PATHS)) for n in ('python3.14', 'python3.15')) if p), None)
-    if not py:
-        raise BuildError('Python 3.14 not found (the build reads zstd with the standard library): brew install python@3.14')
-    return Path(py)
+    # The build tools run on uv's own Python 3.14 (the build reads zstd with the standard library). It bundles expat;
+    # Homebrew's python@3.14 links the system one, which can be too old for it, and then pip cannot even start.
+    uv = shutil.which('uv', path=os.pathsep.join(TOOL_PATHS + [str(Path.home() / '.local/bin')]))
+    if not uv:
+        raise BuildError('uv not found: curl -LsSf https://astral.sh/uv/install.sh | sh')
+    found = subprocess.run([uv, 'python', 'find', '--managed-python', '3.14'], capture_output=True, text=True)
+    if found.returncode or not found.stdout.strip():
+        raise BuildError('uv has no Python 3.14 of its own: uv python install 3.14')
+    return Path(found.stdout.strip())
 
 
 # ---- work folder ----
@@ -291,6 +302,12 @@ def prepare_work(work, py, logs):
     git_fetch(*SPIRV_CROSS, src / 'SPIRV-Cross', logs / 'fetch-spirv-cross.log')
     link(tooling / 'spirv-cross', src / 'SPIRV-Cross')
     venv = work / 'venv'
+    # A venv made by another Python (an older build used Homebrew's) is made again on uv's
+    cfg = venv / 'pyvenv.cfg'
+    home = next((l.split('=', 1)[1].strip() for l in cfg.read_text().splitlines() if l.split('=')[0].strip() == 'home'),
+                None) if cfg.exists() else None
+    if home != str(py.parent):
+        shutil.rmtree(venv, ignore_errors=True)
     if not (venv / 'bin/python').exists():
         say('Python environment for the build tools')
         run([py, '-m', 'venv', venv], logs / 'venv.log')
@@ -1180,7 +1197,7 @@ def step_shaders_botw(tree, botw, logs):
 
 def parse_args(argv):
     ap = argparse.ArgumentParser(description='Build a native Mac app or unsigned iPhone/iPad IPA from TOTK base 1.0.0 (XCI/NSP), optionally with the separate 1.1.2, 1.2.1 or 1.4.3 update; or a Mac app from Breath of the Wild base + separate 1.6.0 update, or a combined card image.',
-                                 epilog='example: python3 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
+                                 epilog='example: uv run --managed-python --python 3.14 build_app.py ~/Games/totk.xci -k ~/keys/prod.keys')
     ap.add_argument('game', type=Path, help='the game file (.xci or .nsp), base game 1.0.0')
     ap.add_argument('--update', type=Path, help='separate supported cumulative update NSP/NSZ; outputs the same single app')
     ap.add_argument('--platform', choices=('macos','ios'), default='macos', help='build a macOS app (default) or unsigned iPhone/iPad IPA')
