@@ -157,7 +157,30 @@ def nca_inventory(f, entries, keys):
     return records
 
 
+def is_bktr(hdr):
+    return any(hdr[0x400 + i * 512 + 4] == 4 for i in range(4))
+
+
+def combined_programs(records):
+    """(base, update) Program NCAs of a file holding base 1.0.0 and one cumulative update together, else None:
+    one base Meta NCA and one update Meta NCA, one plain Program NCA and one BKTR Program NCA, nothing else's title."""
+    if not all(r['title_id'] in ('0100F2C0115B6000', '0100F2C0115B6800') for r, _ in records):
+        return None
+    metadata = sorted(r['title_id'] for r, _ in records if r['content_type'] == 1)
+    programs = [(r, h) for r, h in records if r['content_type'] == 0]
+    base = [(r, h) for r, h in programs if not is_bktr(h)]
+    update = [(r, h) for r, h in programs if is_bktr(h)]
+    if metadata != ['0100F2C0115B6000', '0100F2C0115B6800'] or len(base) != 1 or len(update) != 1:
+        return None
+    return base[0], update[0]
+
+
 def program_nca(records, update=False):
+    combined = combined_programs(records)
+    if combined:
+        record, hdr = combined[1 if update else 0]
+        require(record['title_id'] == '0100F2C0115B6000', 'Expected the Tears of the Kingdom Program NCA')
+        return record, hdr
     if update:
         programs = [(r, h) for r, h in records if r["content_type"] == 0]
         require(len(programs) == 1, "Expected one update Program NCA; combined packages are unsupported")

@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from extract_exefs import (load_keys, container_entries, common_tickets, nca_inventory,
-                           program_nca, record_offset, require)
+                           combined_programs, program_nca, record_offset, require)
 from extract_romfs import index_romfs
 
 # Lockpick_RCM writes these as 17 bytes: the 16-byte source plus a trailing NUL.
@@ -66,12 +66,14 @@ def merge(base, update, keys_path, hactool, output, *, base_romfs=None):
     for source, is_update in sources:
         with source.open('rb') as f:
             kind, entries = container_entries(f, source.stat().st_size)
-            require(not is_update or kind == 'nsp', 'Update must be an NSP')
+            records = nca_inventory(f, entries, keys)
+            require(not is_update or kind == 'nsp' or combined_programs(records),
+                    'Update must be an NSP, or a card image holding the base game and the update')
             found = common_tickets(f, entries)
             for rights, key in found.items():
                 require(rights not in tickets or tickets[rights] == key, 'Conflicting common tickets')
                 tickets[rights] = key
-            record, header = program_nca(nca_inventory(f, entries, keys), update=is_update)
+            record, header = program_nca(records, update=is_update)
             rights = header[0x230:0x240]
             require(rights == bytes(16) or rights in tickets, 'Missing common ticket')
             inputs.append((source, record, header))

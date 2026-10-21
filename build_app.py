@@ -1054,7 +1054,8 @@ def step_warm_metal(tree, out, logs):
 
 # ---- Breath of the Wild (games/botw) ----
 def identify_game(tree, game, keys, logs):
-    """'totk' or 'botw' from the title IDs of the NCAs in the game file (scripts/identify_game.py); the name is not used."""
+    """'totk' or 'botw' from the title IDs of the NCAs in the game file (scripts/identify_game.py); the name is not used.
+    Also whether the file holds the TOTK base game and a cumulative update together."""
     log = logs / 'identify-game.log'
     run([tree / '.venv/bin/python', 'scripts/identify_game.py', game, '--keys', keys], log, cwd=tree, quiet=False)
     report = last_json(log)
@@ -1064,7 +1065,7 @@ def identify_game(tree, game, keys, logs):
     if len(found) != 1:
         raise BuildError(f'the game file holds {report["titles"]}: expected Tears of the Kingdom (0100F2C0115B6000) or '
                          f'Breath of the Wild (01007EF00011E000)')
-    return found[0]
+    return found[0], bool(report.get('combined'))
 
 
 def step_code_botw(tree, botw, game, keys, env, logs):
@@ -1250,7 +1251,7 @@ def main(argv):
     fresh_work = not work.exists()
     # The game decides the platforms, the work folder and the disk space needed, so it is identified before those checks.
     tree = prepare_work(work, py, logs)
-    which = identify_game(tree, game, keys, logs)
+    which, combined = identify_game(tree, game, keys, logs)
     if which == 'botw':
         if fresh_work and not args.work:   # BotW_build next to the game file, not TOTK_build
             shutil.rmtree(work)
@@ -1289,6 +1290,10 @@ def main(argv):
         say('Open it from Finder. The first start verifies the game data and any installed add-on content and keeps a record; '
             'saves, the shader cache and the log go to ~/Library/Application Support/MacNativeGames/BotW and ~/Library/Logs/MacNativeGames/botw.log.')
         return
+    if combined and not update:
+        # base 1.0.0 and the update in one file: the same file is both (the version still comes from the module hashes)
+        say('the game file holds the base game and an update; building the update')
+        update = game
     work_volume=existing_volume_path(work.parent if work.parent.exists() else game.parent)
     output_volume=existing_volume_path(out.parent if out.parent.exists() else game.parent)
     free=shutil.disk_usage(work_volume).free/2**30
